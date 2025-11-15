@@ -1,17 +1,11 @@
 import os
 import logging
 import tempfile
-import asyncio
 from flask import Flask, request, jsonify
 import cv2
 import numpy as np
 from telegram import Bot
-from telegram.error import TelegramError
 import requests
-from dotenv import load_dotenv
-
-# Загружаем переменные окружения из .env файла
-load_dotenv()
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,20 +16,13 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'http://localhost:5000')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 PORT = int(os.environ.get('PORT', 5000))
 
 app = Flask(__name__)
 
-# Глобальная переменная для бота
-bot = None
-
-def init_bot():
-    """Инициализация бота"""
-    global bot
-    if TOKEN:
-        bot = Bot(token=TOKEN)
-    return bot
+# Инициализация бота
+bot = Bot(token=TOKEN) if TOKEN else None
 
 def create_beer_mug():
     """Создает кружку пива программно"""
@@ -116,48 +103,13 @@ def download_file(url, local_path):
         logger.error(f"Ошибка загрузки файла: {str(e)}")
         return False
 
-def sync_send_message(chat_id, text):
-    """Синхронная отправка сообщения"""
-    try:
-        if bot:
-            # Используем run для синхронного выполнения асинхронной функции
-            asyncio.run(bot.send_message(chat_id=chat_id, text=text))
-    except Exception as e:
-        logger.error(f"Ошибка отправки сообщения: {str(e)}")
-
-def sync_send_photo(chat_id, photo_path, caption=None):
-    """Синхронная отправка фото"""
-    try:
-        if bot:
-            with open(photo_path, 'rb') as photo:
-                asyncio.run(bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo,
-                    caption=caption
-                ))
-    except Exception as e:
-        logger.error(f"Ошибка отправки фото: {str(e)}")
-
-def sync_get_file(file_id):
-    """Синхронное получение информации о файле"""
-    try:
-        if bot:
-            return asyncio.run(bot.get_file(file_id))
-    except Exception as e:
-        logger.error(f"Ошибка получения файла: {str(e)}")
-    return None
-
 @app.route('/')
 def home():
     return jsonify({
         "status": "Beer Bot работает! 🍻",
-        "mode": "локальный",
+        "mode": "production",
         "token_set": bool(TOKEN),
-        "endpoints": {
-            "health": "/health",
-            "set_webhook": "/set_webhook (только для production)",
-            "test": "/test"
-        }
+        "webhook_url": WEBHOOK_URL
     })
 
 @app.route('/health')
@@ -168,7 +120,7 @@ def health():
 def webhook():
     """Обработчик вебхука от Telegram"""
     try:
-        if not TOKEN:
+        if not bot:
             logger.error("TELEGRAM_BOT_TOKEN не установлен")
             return "ERROR: Token not configured", 500
         
@@ -186,17 +138,16 @@ def webhook():
                 text = message['text'].lower()
                 
                 if text in ['/start', '/help']:
-                    sync_send_message(
-                        chat_id,
-                        "🍻 Привет! Я Beer Bot! 🍻\n\n"
-                        "Отправь мне фото человека или животного, и я добавлю кружку пива!\n\n"
-                        "Просто отправь любое фото и увидишь магию!\n\n"
-                        "Режим: Локальный запуск"
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text="🍻 Привет! Я Beer Bot! 🍻\n\n"
+                             "Отправь мне фото человека или животного, и я добавлю кружку пива!\n\n"
+                             "Просто отправь любое фото и увидишь магию!"
                     )
                 elif text == '/test':
-                    sync_send_message(chat_id, "✅ Бот работает! Отправь фото для теста.")
+                    bot.send_message(chat_id, "✅ Бот работает! Отправь фото для теста.")
                 else:
-                    sync_send_message(chat_id, "Отправь мне фото, и я добавлю кружку пива! 🍻")
+                    bot.send_message(chat_id, "Отправь мне фото, и я добавлю кружку пива! 🍻")
             
             # Фото
             elif 'photo' in message:
@@ -214,16 +165,16 @@ def process_photo_message(message):
         chat_id = message['chat']['id']
         
         logger.info("Обработка фото...")
-        sync_send_message(chat_id, "🍻 Обрабатываю фото... Добавляю кружку пива!")
+        bot.send_message(chat_id, "🍻 Обрабатываю фото... Добавляю кружку пива!")
         
         # Берем фото наибольшего качества (последнее в массиве)
         photo = message['photo'][-1]
         file_id = photo['file_id']
         
         # Получаем информацию о файле
-        file_info = sync_get_file(file_id)
+        file_info = bot.get_file(file_id)
         if not file_info:
-            sync_send_message(chat_id, "❌ Не удалось получить информацию о файле")
+            bot.send_message(chat_id, "❌ Не удалось получить информацию о файле")
             return
         
         file_url = file_info.file_path
@@ -239,20 +190,21 @@ def process_photo_message(message):
             # Скачиваем фото
             download_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_url}"
             if not download_file(download_url, input_path):
-                sync_send_message(chat_id, "❌ Не удалось загрузить фото")
+                bot.send_message(chat_id, "❌ Не удалось загрузить фото")
                 return
             
             # Обрабатываем изображение
             if not add_beer_to_image(input_path, output_path):
-                sync_send_message(chat_id, "❌ Не удалось обработать фото")
+                bot.send_message(chat_id, "❌ Не удалось обработать фото")
                 return
             
             # Отправляем результат
-            sync_send_photo(
-                chat_id=chat_id,
-                photo_path=output_path,
-                caption="🎉 Ваше фото с кружкой пива! 🍻\n(Локальный режим)"
-            )
+            with open(output_path, 'rb') as photo_file:
+                bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo_file,
+                    caption="🎉 Ваше фото с кружкой пива! 🍻"
+                )
             logger.info("Фото успешно обработано и отправлено")
                 
         finally:
@@ -267,77 +219,82 @@ def process_photo_message(message):
     except Exception as e:
         logger.error(f"Ошибка обработки фото: {str(e)}")
         try:
-            sync_send_message(message['chat']['id'], "❌ Произошла ошибка при обработке фото")
+            bot.send_message(message['chat']['id'], "❌ Произошла ошибка при обработке фото")
         except:
             pass
 
 @app.route('/set_webhook', methods=['GET'])
 def set_webhook_route():
-    """Установка вебхука - только для production"""
-    return jsonify({
-        "status": "info",
-        "message": "В локальном режиме вебхук не используется. Для тестирования используйте polling или ngrok."
-    })
-
-@app.route('/test', methods=['GET'])
-def test():
-    """Тестовый endpoint"""
+    """Установка вебхука"""
     try:
-        if not TOKEN:
-            return jsonify({"error": "Токен не установлен"}), 400
+        if not TOKEN or not WEBHOOK_URL:
+            return jsonify({
+                "error": "TELEGRAM_BOT_TOKEN or WEBHOOK_URL not set",
+                "token_set": bool(TOKEN),
+                "webhook_url_set": bool(WEBHOOK_URL)
+            }), 400
         
-        # Простая проверка бота
-        sync_send_message(chat_id=0000000, text="Тестовое сообщение")  # Неправильный chat_id для теста
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        result = bot.set_webhook(webhook_url)
+        
+        logger.info(f"Вебхук установлен: {webhook_url}")
         
         return jsonify({
             "status": "success",
-            "message": "Бот инициализирован",
-            "token_set": bool(TOKEN)
+            "webhook_url": webhook_url,
+            "result": result
         })
         
     except Exception as e:
+        logger.error(f"Ошибка установки вебхука: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/demo', methods=['GET'])
-def demo():
-    """Демонстрация обработки изображения"""
+@app.route('/remove_webhook', methods=['GET'])
+def remove_webhook_route():
+    """Удаление вебхука"""
     try:
-        # Создаем тестовое изображение
-        test_img = np.ones((400, 400, 3), dtype=np.uint8) * 255
+        if not TOKEN:
+            return jsonify({"error": "TELEGRAM_BOT_TOKEN not set"}), 400
         
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as input_file:
-            input_path = input_file.name
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as output_file:
-            output_path = output_file.name
+        result = bot.delete_webhook()
         
-        cv2.imwrite(input_path, test_img)
-        success = add_beer_to_image(input_path, output_path)
+        return jsonify({"status": "success", "result": result})
         
-        # Чистим
-        for path in [input_path, output_path]:
-            if os.path.exists(path):
-                os.unlink(path)
+    except Exception as e:
+        logger.error(f"Ошибка удаления вебхука: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/webhook_info', methods=['GET'])
+def webhook_info():
+    """Информация о вебхуке"""
+    try:
+        if not TOKEN:
+            return jsonify({"error": "TELEGRAM_BOT_TOKEN not set"}), 400
+        
+        info = bot.get_webhook_info()
         
         return jsonify({
-            "demo": "success" if success else "failed",
-            "message": "Обработка изображения работает" if success else "Ошибка обработки"
+            "url": info.url,
+            "has_custom_certificate": info.has_custom_certificate,
+            "pending_update_count": info.pending_update_count,
+            "last_error_date": info.last_error_date,
+            "last_error_message": info.last_error_message
         })
         
     except Exception as e:
+        logger.error(f"Ошибка получения информации о вебхуке: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Инициализируем бота
-    init_bot()
-    
-    logger.info("🚀 Запуск Beer Bot в локальном режиме")
+    logger.info("🚀 Запуск Beer Bot на Render")
     logger.info(f"📝 PORT: {PORT}")
     logger.info(f"🔑 Token установлен: {bool(TOKEN)}")
+    logger.info(f"🌐 WEBHOOK_URL: {WEBHOOK_URL}")
     
     if not TOKEN:
-        logger.warning("⚠️ TELEGRAM_BOT_TOKEN не установлен! Создайте файл .env")
-        logger.info("💡 Пример .env файла:")
-        logger.info("TELEGRAM_BOT_TOKEN=your_token_here")
-        logger.info("WEBHOOK_URL=http://localhost:5000")
+        logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
     
-    app.run(host='0.0.0.0', port=PORT, debug=True)
+    if not WEBHOOK_URL:
+        logger.error("❌ WEBHOOK_URL не установлен!")
+    
+    app.run(host='0.0.0.0', port=PORT, debug=False)
