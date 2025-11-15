@@ -15,8 +15,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # РУЧНОЕ ОПРЕДЕЛЕНИЕ ПЕРЕМЕННЫХ - ЗАМЕНИТЕ НА СВОИ ЗНАЧЕНИЯ
-TOKEN = "ВАШ_ТОКЕН_БОТА"  # Замените на токен от BotFather
-WEBHOOK_URL = "https://your-app-name.onrender.com"  # Замените на ваш URL на Render
+TOKEN = "8222564910:AAHsVTZcn_O5NhbluSo6_Vau1BrdLsvZHRo"  # Замените на токен от BotFather
+WEBHOOK_URL = "https://beerbot-1-rz63.onrender.com"  # Замените на ваш URL на Render
 PORT = int(os.environ.get('PORT', 5000))
 
 app = Flask(__name__)
