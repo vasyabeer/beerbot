@@ -1,8 +1,0 @@
-beer-bot/
-├── app.py
-├── requirements.txt
-├── Procfile
-├── utils/
-│   └── image_processing.py
-└── templates/
-    └── beer.png
