@@ -1,0 +1,175 @@
+import os
+import logging
+import tempfile
+from flask import Flask, request
+import cv2
+import numpy as np
+from PIL import Image
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Конфигурация
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+PORT = int(os.environ.get('PORT', 5000))
+
+app = Flask(__name__)
+
+def create_simple_beer_mug():
+    """Создает простую кружку пива программно"""
+    size = 200
+    beer_mug = np.zeros((size, size, 4), dtype=np.uint8)
+    
+    # Рисуем кружку
+    cv2.rectangle(beer_mug, (50, 30), (150, 170), (200, 150, 50, 255), -1)  # Основная часть
+    cv2.rectangle(beer_mug, (50, 20), (150, 40), (255, 255, 255, 255), -1)  # Пена
+    cv2.ellipse(beer_mug, (160, 100), (20, 40), 0, 0, 360, (150, 100, 50, 255), -1)  # Ручка
+    
+    return beer_mug
+
+def add_beer_mug(input_path, output_path):
+    """Добавляет кружку пива на изображение"""
+    try:
+        # Загружаем изображение
+        img = cv2.imread(input_path)
+        if img is None:
+            return False
+        
+        # Создаем кружку пива
+        beer_mug = create_simple_beer_mug()
+        
+        # Определяем размеры
+        img_height, img_width = img.shape[:2]
+        beer_height, beer_width = beer_mug.shape[:2]
+        
+        # Масштабируем кружку
+        scale = min(img_width, img_height) * 0.2 / beer_width
+        new_width = int(beer_width * scale)
+        new_height = int(beer_height * scale)
+        beer_mug = cv2.resize(beer_mug, (new_width, new_height))
+        
+        # Позиционируем кружку
+        x_offset = img_width - new_width - 20
+        y_offset = img_height - new_height - 20
+        
+        # Накладываем кружку
+        for y in range(new_height):
+            for x in range(new_width):
+                if y + y_offset < img_height and x + x_offset < img_width:
+                    alpha = beer_mug[y, x, 3] / 255.0
+                    for c in range(3):
+                        img[y + y_offset, x + x_offset, c] = (
+                            alpha * beer_mug[y, x, c] + 
+                            (1 - alpha) * img[y + y_offset, x + x_offset, c]
+                        )
+        
+        # Сохраняем результат
+        cv2.imwrite(output_path, img)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error processing image: {e}")
+        return False
+
+@app.route('/')
+def index():
+    return "Beer Bot is running! 🍻"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработчик вебхука от Telegram"""
+    try:
+        from telegram import Update, Bot
+        from telegram.ext import Application, MessageHandler, filters, CallbackContext
+        
+        # Инициализация бота
+        bot = Bot(token=TOKEN)
+        update = Update.de_json(request.get_json(), bot)
+        
+        # Обработка сообщения
+        if update.message and update.message.photo:
+            process_photo(bot, update.message)
+        
+        return "OK"
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "ERROR", 500
+
+def process_photo(bot, message):
+    """Обработка фото"""
+    try:
+        chat_id = message.chat.id
+        
+        # Отправляем сообщение о обработке
+        bot.send_message(chat_id, "Обрабатываю фото... 🍻")
+        
+        # Скачиваем фото (берем самое большое)
+        photo_file = message.photo[-1].get_file()
+        
+        # Создаем временные файлы
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as input_file:
+            input_path = input_file.name
+        
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as output_file:
+            output_path = output_file.name
+        
+        try:
+            # Скачиваем фото
+            photo_file.download(input_path)
+            
+            # Обрабатываем изображение
+            success = add_beer_mug(input_path, output_path)
+            
+            if success:
+                # Отправляем обработанное фото
+                with open(output_path, 'rb') as photo:
+                    bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        caption="Ваше фото с кружкой пива! 🍻"
+                    )
+            else:
+                bot.send_message(chat_id, "Извините, не удалось обработать фото 😔")
+                
+        finally:
+            # Удаляем временные файлы
+            if os.path.exists(input_path):
+                os.unlink(input_path)
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+                
+    except Exception as e:
+        logger.error(f"Error processing photo: {e}")
+        bot.send_message(message.chat.id, "Произошла ошибка при обработке фото 😔")
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Установка вебхука"""
+    try:
+        if not TOKEN or not WEBHOOK_URL:
+            return "TOKEN or WEBHOOK_URL not set", 400
+            
+        from telegram import Bot
+        bot = Bot(token=TOKEN)
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        result = bot.set_webhook(webhook_url)
+        
+        return f"Webhook set to {webhook_url}: {result}"
+    except Exception as e:
+        return f"Error setting webhook: {e}", 500
+
+@app.route('/remove_webhook', methods=['GET'])
+def remove_webhook():
+    """Удаление вебхука"""
+    try:
+        from telegram import Bot
+        bot = Bot(token=TOKEN)
+        result = bot.delete_webhook()
+        return f"Webhook removed: {result}"
+    except Exception as e:
+        return f"Error removing webhook: {e}", 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=PORT)
