@@ -1,0 +1,29 @@
+import os
+from flask import Flask
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+@app.route('/')
+def hello():
+    logger.info("Root endpoint called")
+    return "Beer Bot is running! 🍻"
+
+@app.route('/health')
+def health():
+    logger.info("Health check")
+    return "OK"
+
+@app.route('/test')
+def test():
+    logger.info("Test endpoint called")
+    return "Test successful!"
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    logger.info(f"Starting app on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=True)
