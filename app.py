@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = "8222564910:AAHsVTZcn_O5NhbluSo6_Vau1BrdLsvZHRo"
-WEBHOOK_URL = "https://beerbot-1-rz63.onrender.com/"
+WEBHOOK_URL = "https://beerbot-1-rz63.onrender.com"
 PORT = int(os.environ.get('PORT', 5000))
 
 app = Flask(__name__)
