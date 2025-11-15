@@ -1,0 +1,143 @@
+import os
+import logging
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import Application, MessageHandler, filters, CallbackContext
+import tempfile
+from utils.image_processing import add_beer_mug
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Конфигурация
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')  # Будет установлен в Render
+PORT = int(os.environ.get('PORT', 5000))
+
+app = Flask(__name__)
+
+# Глобальные переменные для бота
+bot_app = None
+
+async def start(update: Update, context: CallbackContext):
+    """Обработчик команды /start"""
+    await update.message.reply_text(
+        "Привет! Отправь мне фото человека или животного, "
+        "и я добавлю кружку пива в руку! 🍻"
+    )
+
+async def handle_photo(update: Update, context: CallbackContext):
+    """Обработчик фотографий"""
+    try:
+        await update.message.reply_text("Обрабатываю фото... 🍻")
+        
+        # Получаем фото
+        photo_file = await update.message.photo[-1].get_file()
+        
+        # Создаем временные файлы
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as input_file:
+            input_path = input_file.name
+        
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as output_file:
+            output_path = output_file.name
+        
+        try:
+            # Скачиваем фото
+            await photo_file.download_to_drive(input_path)
+            
+            # Обрабатываем изображение
+            success = add_beer_mug(input_path, output_path)
+            
+            if success:
+                # Отправляем обработанное фото
+                with open(output_path, 'rb') as photo:
+                    await update.message.reply_photo(
+                        photo=photo,
+                        caption="Ваше фото с кружкой пива! 🍻"
+                    )
+            else:
+                await update.message.reply_text("Извините, не удалось обработать фото 😔")
+                
+        finally:
+            # Удаляем временные файлы
+            if os.path.exists(input_path):
+                os.unlink(input_path)
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+                
+    except Exception as e:
+        logger.error(f"Error processing photo: {e}")
+        await update.message.reply_text("Произошла ошибка при обработке фото 😔")
+
+async def handle_message(update: Update, context: CallbackContext):
+    """Обработчик текстовых сообщений"""
+    await update.message.reply_text("Отправь мне фото, чтобы добавить кружку пива! 🍻")
+
+def setup_bot():
+    """Настройка бота"""
+    global bot_app
+    
+    bot_app = Application.builder().token(TOKEN).build()
+    
+    # Добавляем обработчики
+    bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    return bot_app
+
+@app.route('/')
+def index():
+    return "Beer Bot is running! 🍻"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработчик вебхука от Telegram"""
+    if bot_app is None:
+        return "Bot not initialized", 500
+    
+    update = Update.de_json(request.get_json(), bot_app.bot)
+    bot_app.update_queue.put_nowait(update)
+    return "OK"
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Установка вебхука"""
+    try:
+        if not WEBHOOK_URL:
+            return "WEBHOOK_URL not set", 400
+            
+        bot = Bot(token=TOKEN)
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        result = bot.set_webhook(webhook_url)
+        
+        return f"Webhook set to {webhook_url}: {result}"
+    except Exception as e:
+        return f"Error setting webhook: {e}", 500
+
+@app.route('/remove_webhook', methods=['GET'])
+def remove_webhook():
+    """Удаление вебхука"""
+    try:
+        bot = Bot(token=TOKEN)
+        result = bot.delete_webhook()
+        return f"Webhook removed: {result}"
+    except Exception as e:
+        return f"Error removing webhook: {e}", 500
+
+if __name__ == '__main__':
+    if TOKEN:
+        # Запуск в production с вебхуком
+        setup_bot()
+        bot_app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TOKEN,
+            webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+        )
+    else:
+        # Локальный запуск для тестирования
+        app.run(host='0.0.0.0', port=PORT)
