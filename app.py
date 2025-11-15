@@ -14,15 +14,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация
-TOKEN = "8222564910:AAHsVTZcn_O5NhbluSo6_Vau1BrdLsvZHRo"
-WEBHOOK_URL = "https://beerbot-1-rz63.onrender.com"
+# РУЧНОЕ ОПРЕДЕЛЕНИЕ ПЕРЕМЕННЫХ - ЗАМЕНИТЕ НА СВОИ ЗНАЧЕНИЯ
+TOKEN = "ВАШ_ТОКЕН_БОТА"  # Замените на токен от BotFather
+WEBHOOK_URL = "https://your-app-name.onrender.com"  # Замените на ваш URL на Render
 PORT = int(os.environ.get('PORT', 5000))
 
 app = Flask(__name__)
 
 # Инициализация бота
-bot = Bot(token=TOKEN) if TOKEN else None
+bot = Bot(token=TOKEN) if TOKEN and TOKEN != "ВАШ_ТОКЕН_БОТА" else None
 
 def create_beer_mug():
     """Создает кружку пива программно"""
@@ -108,21 +108,38 @@ def home():
     return jsonify({
         "status": "Beer Bot работает! 🍻",
         "mode": "production",
-        "token_set": bool(TOKEN),
-        "webhook_url": WEBHOOK_URL
+        "token_set": bool(bot),
+        "webhook_url": WEBHOOK_URL,
+        "instructions": "Проверьте настройки в /settings"
     })
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "token_set": bool(TOKEN)})
+    return jsonify({"status": "healthy", "bot_initialized": bool(bot)})
+
+@app.route('/settings')
+def settings():
+    """Показывает текущие настройки"""
+    current_token = "НЕ УСТАНОВЛЕН" if not bot else "УСТАНОВЛЕН (скрыт)"
+    return jsonify({
+        "bot_initialized": bool(bot),
+        "webhook_url": WEBHOOK_URL,
+        "port": PORT,
+        "instructions": {
+            "1": "Замените TOKEN и WEBHOOK_URL в коде app.py",
+            "2": "Перезапустите приложение на Render",
+            "3": "Откройте /set_webhook для установки вебхука",
+            "4": "Протестируйте бота в Telegram"
+        }
+    })
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Обработчик вебхука от Telegram"""
     try:
         if not bot:
-            logger.error("TELEGRAM_BOT_TOKEN не установлен")
-            return "ERROR: Token not configured", 500
+            logger.error("Бот не инициализирован. Проверьте токен.")
+            return "ERROR: Bot not initialized", 500
         
         update_data = request.get_json()
         if not update_data:
@@ -227,11 +244,16 @@ def process_photo_message(message):
 def set_webhook_route():
     """Установка вебхука"""
     try:
-        if not TOKEN or not WEBHOOK_URL:
+        if not bot:
             return jsonify({
-                "error": "TELEGRAM_BOT_TOKEN or WEBHOOK_URL not set",
-                "token_set": bool(TOKEN),
-                "webhook_url_set": bool(WEBHOOK_URL)
+                "error": "Бот не инициализирован. Проверьте токен в коде.",
+                "instructions": "Замените TOKEN в app.py на ваш токен от BotFather"
+            }), 400
+        
+        if not WEBHOOK_URL or WEBHOOK_URL == "https://your-app-name.onrender.com":
+            return jsonify({
+                "error": "WEBHOOK_URL не установлен",
+                "instructions": "Замените WEBHOOK_URL в app.py на ваш URL с Render"
             }), 400
         
         webhook_url = f"{WEBHOOK_URL}/webhook"
@@ -242,7 +264,8 @@ def set_webhook_route():
         return jsonify({
             "status": "success",
             "webhook_url": webhook_url,
-            "result": result
+            "result": result,
+            "message": "Вебхук успешно установлен! Теперь можете тестировать бота в Telegram."
         })
         
     except Exception as e:
@@ -253,12 +276,16 @@ def set_webhook_route():
 def remove_webhook_route():
     """Удаление вебхука"""
     try:
-        if not TOKEN:
-            return jsonify({"error": "TELEGRAM_BOT_TOKEN not set"}), 400
+        if not bot:
+            return jsonify({"error": "Бот не инициализирован"}), 400
         
         result = bot.delete_webhook()
         
-        return jsonify({"status": "success", "result": result})
+        return jsonify({
+            "status": "success", 
+            "result": result,
+            "message": "Вебхук удален"
+        })
         
     except Exception as e:
         logger.error(f"Ошибка удаления вебхука: {str(e)}")
@@ -268,8 +295,8 @@ def remove_webhook_route():
 def webhook_info():
     """Информация о вебхуке"""
     try:
-        if not TOKEN:
-            return jsonify({"error": "TELEGRAM_BOT_TOKEN not set"}), 400
+        if not bot:
+            return jsonify({"error": "Бот не инициализирован"}), 400
         
         info = bot.get_webhook_info()
         
@@ -288,13 +315,15 @@ def webhook_info():
 if __name__ == '__main__':
     logger.info("🚀 Запуск Beer Bot на Render")
     logger.info(f"📝 PORT: {PORT}")
-    logger.info(f"🔑 Token установлен: {bool(TOKEN)}")
+    logger.info(f"🔑 Bot инициализирован: {bool(bot)}")
     logger.info(f"🌐 WEBHOOK_URL: {WEBHOOK_URL}")
     
-    if not TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
-    
-    if not WEBHOOK_URL:
-        logger.error("❌ WEBHOOK_URL не установлен!")
+    if not bot:
+        logger.error("❌ Бот не инициализирован! Замените TOKEN в коде на ваш токен.")
+        logger.info("💡 Инструкция:")
+        logger.info("1. Получите токен у @BotFather в Telegram")
+        logger.info("2. Замените 'ВАШ_ТОКЕН_БОТА' в коде app.py на ваш токен")
+        logger.info("3. Замените WEBHOOK_URL на ваш URL с Render")
+        logger.info("4. Перезапустите приложение")
     
     app.run(host='0.0.0.0', port=PORT, debug=False)
