@@ -1,0 +1,329 @@
+import os
+import logging
+import tempfile
+from flask import Flask, request, jsonify
+import cv2
+import numpy as np
+from telegram import Bot, Update
+from telegram.error import TelegramError
+import requests
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Конфигурация
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+PORT = int(os.environ.get('PORT', 5000))
+
+app = Flask(__name__)
+
+def create_beer_mug():
+    """Создает кружку пива с прозрачным фоном"""
+    size = 200
+    # Создаем изображение с альфа-каналом
+    beer_mug = np.zeros((size, size, 4), dtype=np.uint8)
+    
+    # Основная часть кружки (янтарный цвет)
+    cv2.rectangle(beer_mug, (60, 50), (140, 180), (50, 100, 200, 255), -1)
+    
+    # Пена
+    cv2.rectangle(beer_mug, (60, 30), (140, 60), (255, 255, 255, 255), -1)
+    cv2.ellipse(beer_mug, (100, 30), (40, 20), 0, 0, 360, (255, 255, 255, 255), -1)
+    
+    # Ручка
+    cv2.ellipse(beer_mug, (150, 120), (25, 40), 0, 270, 90, (100, 70, 30, 255), -1)
+    
+    # Ободок
+    cv2.rectangle(beer_mug, (55, 45), (145, 55), (100, 70, 30, 255), -1)
+    cv2.rectangle(beer_mug, (55, 175), (145, 185), (100, 70, 30, 255), -1)
+    
+    return beer_mug
+
+def add_beer_to_image(input_path, output_path):
+    """Добавляет кружку пива на изображение"""
+    try:
+        logger.info("Starting image processing")
+        
+        # Читаем исходное изображение
+        original_image = cv2.imread(input_path)
+        if original_image is None:
+            logger.error("Failed to read input image")
+            return False
+        
+        # Создаем кружку пива
+        beer_mug = create_beer_mug()
+        
+        # Получаем размеры
+        img_height, img_width = original_image.shape[:2]
+        beer_height, beer_width = beer_mug.shape[:2]
+        
+        # Вычисляем размер кружки (20% от меньшей стороны изображения)
+        scale = min(img_width, img_height) * 0.2 / beer_width
+        new_width = int(beer_width * scale)
+        new_height = int(beer_height * scale)
+        
+        # Масштабируем кружку
+        beer_mug_resized = cv2.resize(beer_mug, (new_width, new_height))
+        
+        # Позиция в правом нижнем углу с отступом
+        x_pos = img_width - new_width - 20
+        y_pos = img_height - new_height - 20
+        
+        # Обеспечиваем, чтобы позиция была в пределах изображения
+        x_pos = max(0, min(x_pos, img_width - new_width))
+        y_pos = max(0, min(y_pos, img_height - new_height))
+        
+        logger.info(f"Image size: {img_width}x{img_height}, Beer size: {new_width}x{new_height}, Position: ({x_pos}, {y_pos})")
+        
+        # Накладываем кружку с учетом прозрачности
+        for y in range(new_height):
+            for x in range(new_width):
+                if y + y_pos < img_height and x + x_pos < img_width:
+                    alpha = beer_mug_resized[y, x, 3] / 255.0  # Альфа-канал
+                    if alpha > 0:  # Если пиксель не полностью прозрачный
+                        for channel in range(3):  # RGB каналы
+                            original_image[y + y_pos, x + x_pos, channel] = (
+                                alpha * beer_mug_resized[y, x, channel] +
+                                (1 - alpha) * original_image[y + y_pos, x + x_pos, channel]
+                            )
+        
+        # Сохраняем результат
+        success = cv2.imwrite(output_path, original_image)
+        logger.info(f"Image saved: {success}")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error in add_beer_to_image: {str(e)}")
+        return False
+
+def download_file(url, local_path):
+    """Скачивает файл по URL"""
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return True
+    except Exception as e:
+        logger.error(f"Error downloading file: {str(e)}")
+        return False
+
+@app.route('/')
+def home():
+    logger.info("Home page accessed")
+    return jsonify({
+        "status": "running",
+        "service": "Beer Bot",
+        "version": "1.0"
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy"})
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработчик вебхука от Telegram"""
+    try:
+        logger.info("Webhook received")
+        
+        if not TOKEN:
+            logger.error("TELEGRAM_BOT_TOKEN not set")
+            return "ERROR: Token not configured", 500
+        
+        # Получаем данные от Telegram
+        update_data = request.get_json()
+        logger.info(f"Update data: {update_data}")
+        
+        if not update_data:
+            logger.error("No data in webhook")
+            return "ERROR: No data", 400
+        
+        update = Update.de_json(update_data, Bot(TOKEN))
+        
+        # Обрабатываем сообщение с фото
+        if update.message and update.message.photo:
+            process_telegram_photo(update.message)
+        elif update.message and update.message.text:
+            process_telegram_text(update.message)
+        
+        return "OK"
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        return "ERROR", 500
+
+def process_telegram_text(message):
+    """Обработка текстовых сообщений"""
+    try:
+        bot = Bot(TOKEN)
+        chat_id = message.chat.id
+        text = message.text.lower()
+        
+        if text in ['/start', '/help']:
+            bot.send_message(
+                chat_id=chat_id,
+                text="🍻 Привет! Я Beer Bot! 🍻\n\nОтправь мне фото человека или животного, и я добавлю кружку пива в руку!\n\nПросто отправь любое фото и увидишь магию!"
+            )
+        else:
+            bot.send_message(
+                chat_id=chat_id,
+                text="Отправь мне фото, и я добавлю кружку пива! 🍻"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error processing text: {str(e)}")
+
+def process_telegram_photo(message):
+    """Обработка фото от Telegram"""
+    try:
+        bot = Bot(TOKEN)
+        chat_id = message.chat.id
+        
+        logger.info("Processing photo message")
+        bot.send_message(chat_id, "🍻 Обрабатываю фото... Добавляю кружку пива!")
+        
+        # Берем фото наибольшего качества (последнее в списке)
+        photo = message.photo[-1]
+        file_id = photo.file_id
+        
+        # Получаем информацию о файле
+        file_info = bot.get_file(file_id)
+        file_url = file_info.file_path
+        
+        logger.info(f"File URL: {file_url}")
+        
+        # Создаем временные файлы
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as input_file:
+            input_path = input_file.name
+        
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as output_file:
+            output_path = output_file.name
+        
+        try:
+            # Скачиваем фото
+            download_success = download_file(f"https://api.telegram.org/file/bot{TOKEN}/{file_url}", input_path)
+            
+            if not download_success:
+                bot.send_message(chat_id, "❌ Не удалось загрузить фото")
+                return
+            
+            # Обрабатываем изображение
+            processing_success = add_beer_to_image(input_path, output_path)
+            
+            if processing_success:
+                # Отправляем обработанное фото
+                with open(output_path, 'rb') as photo_file:
+                    bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo_file,
+                        caption="🎉 Ваше фото с кружкой пива! 🍻"
+                    )
+                logger.info("Photo processed and sent successfully")
+            else:
+                bot.send_message(chat_id, "❌ Не удалось обработать фото. Попробуйте другое изображение.")
+                logger.error("Photo processing failed")
+                
+        finally:
+            # Удаляем временные файлы
+            try:
+                if os.path.exists(input_path):
+                    os.unlink(input_path)
+                if os.path.exists(output_path):
+                    os.unlink(output_path)
+            except Exception as e:
+                logger.error(f"Error cleaning temp files: {str(e)}")
+                
+    except Exception as e:
+        logger.error(f"Error processing photo: {str(e)}")
+        try:
+            bot.send_message(chat_id, "❌ Произошла ошибка при обработке фото")
+        except:
+            pass
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook_route():
+    """Установка вебхука"""
+    try:
+        if not TOKEN or not WEBHOOK_URL:
+            return jsonify({
+                "error": "TELEGRAM_BOT_TOKEN or WEBHOOK_URL not set",
+                "token_set": bool(TOKEN),
+                "webhook_url_set": bool(WEBHOOK_URL)
+            }), 400
+        
+        bot = Bot(TOKEN)
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        
+        # Устанавливаем вебхук
+        result = bot.set_webhook(webhook_url)
+        
+        logger.info(f"Webhook set to: {webhook_url}, result: {result}")
+        
+        return jsonify({
+            "status": "success",
+            "webhook_url": webhook_url,
+            "result": result
+        })
+        
+    except Exception as e:
+        logger.error(f"Error setting webhook: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/remove_webhook', methods=['GET'])
+def remove_webhook_route():
+    """Удаление вебхука"""
+    try:
+        if not TOKEN:
+            return jsonify({"error": "TELEGRAM_BOT_TOKEN not set"}), 400
+        
+        bot = Bot(TOKEN)
+        result = bot.delete_webhook()
+        
+        logger.info(f"Webhook removed: {result}")
+        
+        return jsonify({
+            "status": "success", 
+            "result": result
+        })
+        
+    except Exception as e:
+        logger.error(f"Error removing webhook: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/webhook_info', methods=['GET'])
+def webhook_info():
+    """Информация о вебхуке"""
+    try:
+        if not TOKEN:
+            return jsonify({"error": "TELEGRAM_BOT_TOKEN not set"}), 400
+        
+        bot = Bot(TOKEN)
+        info = bot.get_webhook_info()
+        
+        return jsonify({
+            "url": info.url,
+            "has_custom_certificate": info.has_custom_certificate,
+            "pending_update_count": info.pending_update_count,
+            "last_error_date": info.last_error_date,
+            "last_error_message": info.last_error_message
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting webhook info: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    logger.info(f"Starting Beer Bot on port {PORT}")
+    logger.info(f"Token set: {bool(TOKEN)}")
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
+    
+    app.run(host='0.0.0.0', port=PORT, debug=False)
