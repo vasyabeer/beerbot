@@ -1,7 +1,7 @@
-flask
-gunicorn
-python-telegram-bot
-opencv-python-headless
-numpy
-Pillow
-requests
+flask==2.3.3
+python-telegram-bot==13.7  # Более старая, но стабильная версия
+opencv-python==4.8.1.78
+numpy==1.24.3
+Pillow==10.0.1
+requests==2.31.0
+python-dotenv==1.0.0
